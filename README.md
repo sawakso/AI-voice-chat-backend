@@ -12,7 +12,7 @@
 
 ### 服务启动成功截图：
 
-![服务启动成功](img\启动成功.png)
+<img src="img/启动成功.png" alt="后端启动成功" width="1000" style="margin:5px;"/>
 
 ### 源码结构：
 
