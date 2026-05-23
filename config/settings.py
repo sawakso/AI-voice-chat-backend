@@ -6,6 +6,11 @@ load_dotenv()
 # ========== LLM 配置 ==========
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "deepseek")  # deepseek / openai / qwen / glm / ollama
 
+# ========== GPT-SoVite 文件配置 ==========
+GPT_WEIGHTS_DIR = os.getenv("GPT_WEIGHTS_DIR", "")
+SOVITS_WEIGHTS_DIR = os.getenv("SOVITS_WEIGHTS_DIR", "")
+REF_AUDIO_DIR = os.getenv("REF_AUDIO_DIR", "")
+
 # 通用 OpenAI 兼容接口
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")

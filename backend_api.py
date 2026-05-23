@@ -1,12 +1,15 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles  # ✅ 新增
 from pydantic import BaseModel
 from core.llm_client import get_ai_reply
 from core.tts_client import text_to_speech
 import os
 import glob
 import requests
+import threading  # ✅ 新增
+import time  # ✅ 新增
 
 app = FastAPI()
 
@@ -17,35 +20,94 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ========== 配置 ==========
-TTS_BACKEND = "http://127.0.0.1:9880"
-TTS_PROJECT_DIR = "D:/Adobe/GPT-SoVTIS-V2/GPT-So-V2-Batch"
+# ========== 配置（从环境变量读取） ==========
+from config.settings import GPT_WEIGHTS_DIR, SOVITS_WEIGHTS_DIR, REF_AUDIO_DIR
 
-GPT_WEIGHTS_DIRS = [
-    f"{TTS_PROJECT_DIR}/GPT_weights_v2",
-    f"{TTS_PROJECT_DIR}/GPT_weights",
-]
-SOVITS_WEIGHTS_DIRS = [
-    f"{TTS_PROJECT_DIR}/SoVITS_weights_v2",
-    f"{TTS_PROJECT_DIR}/SoVITS_weights",
-]
-REF_AUDIO_DIR = "D:/Adobe/GPT-SoVTIS-V2/推理"
+TTS_BACKEND = os.getenv("TTS_API_URL", "http://127.0.0.1:9880")
+
+GPT_WEIGHTS_DIRS = [d.strip() for d in GPT_WEIGHTS_DIR.split(",") if d.strip()] if GPT_WEIGHTS_DIR else []
+SOVITS_WEIGHTS_DIRS = [d.strip() for d in SOVITS_WEIGHTS_DIR.split(",") if d.strip()] if SOVITS_WEIGHTS_DIR else []
 
 
+# ========== 音频文件自动清理 ==========
+def cleanup_old_audio_files():
+    """定期清理 output 目录中超过 1 小时的音频文件"""
+    output_dir = "output"
+
+    # 确保目录存在
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+        return
+
+    while True:
+        try:
+            now = time.time()
+            deleted_count = 0
+
+            for filename in os.listdir(output_dir):
+                filepath = os.path.join(output_dir, filename)
+                if os.path.isfile(filepath) and filename.endswith('.wav'):
+                    # 删除超过 1 小时的文件
+                    if now - os.path.getmtime(filepath) > 3600:
+                        os.remove(filepath)
+                        deleted_count += 1
+                        print(f"🧹 已清理: {filename}")
+
+            if deleted_count > 0:
+                print(f"✅ 共清理 {deleted_count} 个过期音频文件")
+
+            # 每小时检查一次
+            time.sleep(3600)
+
+        except Exception as e:
+            print(f"清理失败: {e}")
+            time.sleep(3600)
+
+
+def start_cleanup_thread():
+    """启动清理线程"""
+    thread = threading.Thread(target=cleanup_old_audio_files, daemon=True)
+    thread.start()
+    print("✅ 音频文件自动清理已启动（保留1小时）")
+
+
+# ========== 确保 output 目录存在并挂载静态文件 ==========
+os.makedirs("output", exist_ok=True)
+app.mount("/output", StaticFiles(directory="output"), name="output")
+
+# ========== 启动清理线程 ==========
+start_cleanup_thread()
 # ========== 请求模型 ==========
+
+class TTSAdvancedParams(BaseModel):
+    top_k: int = 15
+    top_p: float = 1
+    temperature: float = 1
+    repetition_penalty: float = 1.35
+    speed_factor: float = 1.0
+    sample_steps: int = 32
+    fragment_interval: float = 0.3
+    seed: int = -1
+    parallel_infer: bool = True
+    split_bucket: bool = True
+    super_sampling: bool = False
 
 class ChatRequest(BaseModel):
     message: str
     ref_audio_path: str
+    aux_ref_audio_paths: list[str] = []
     prompt_text: str
     prompt_lang: str = "zh"
     text_lang: str = "zh"
+    tts_params: TTSAdvancedParams = TTSAdvancedParams()
 
 class VoiceConfig(BaseModel):
     ref_audio_path: str
+    aux_ref_audio_paths: list[str] = []
     prompt_text: str
     prompt_lang: str = "zh"
     text_lang: str = "zh"
+    tts_params: TTSAdvancedParams = TTSAdvancedParams()
 
 class SwitchModelRequest(BaseModel):
     gpt_model: str = ""
@@ -55,7 +117,6 @@ class SwitchModelRequest(BaseModel):
 # ========== 工具函数 ==========
 
 def scan_files(dirs, extensions):
-    """扫描目录下的模型文件，返回文件名列表"""
     files = []
     for d in dirs:
         if os.path.exists(d):
@@ -67,65 +128,107 @@ def scan_files(dirs, extensions):
     return files
 
 def scan_ref_audios(base_dir):
-    """递归扫描参考音频"""
-    files = []
-    if os.path.exists(base_dir):
-        for f in glob.glob(f"{base_dir}/**/*.wav", recursive=True):
-            # 返回完整路径，前端直接用
-            files.append(f.replace("\\", "/"))
-    return files
+    """扫描参考音频，优先读 *.list 文件"""
+    characters = []
+    if not os.path.exists(base_dir):
+        return characters
+
+    # 1. 扫描所有 .list 文件
+    list_files = glob.glob(f"{base_dir}/*.list")
+    if list_files:
+        for list_file in sorted(list_files):
+            char_name = os.path.splitext(os.path.basename(list_file))[0]
+            files = []
+            with open(list_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split("|")
+                    if len(parts) >= 4:
+                        path, _, lang, prompt_text = parts[0], parts[1], parts[2], parts[3]
+                        files.append({
+                            "name": os.path.basename(path),
+                            "path": path.replace("\\", "/"),
+                            "lang": lang,
+                            "prompt_text": prompt_text
+                        })
+            if files:
+                characters.append({"character": char_name, "files": files})
+        return characters
+
+    # 2. 兜底：按文件夹递归扫描
+    for char_name in sorted(os.listdir(base_dir)):
+        char_dir = os.path.join(base_dir, char_name)
+        if not os.path.isdir(char_dir):
+            continue
+        files = []
+        for root, _, filenames in os.walk(char_dir):
+            for fn in sorted(filenames):
+                if fn.lower().endswith(('.wav', '.mp3')):
+                    full_path = os.path.join(root, fn).replace("\\", "/")
+                    file_info = {"name": fn, "path": full_path}
+                    txt_path = full_path.rsplit('.', 1)[0] + '.txt'
+                    if os.path.exists(txt_path):
+                        with open(txt_path, "r", encoding="utf-8") as tf:
+                            file_info["prompt_text"] = tf.read().strip()
+                    files.append(file_info)
+        if files:
+            characters.append({"character": char_name, "files": files})
+    return characters
+
+def find_model_path(dirs, filename):
+    for d in dirs:
+        path = f"{d}/{filename}"
+        if os.path.exists(path):
+            return path
+    return ""
 
 
 # ========== API ==========
 
 @app.get("/api/models")
 async def get_models():
-    """获取可用模型列表和参考音频列表"""
-    gpt_models = scan_files(GPT_WEIGHTS_DIRS, [".ckpt", ".pth"])
-    sovits_models = scan_files(SOVITS_WEIGHTS_DIRS, [".ckpt", ".pth"])
-    ref_audios = scan_ref_audios(REF_AUDIO_DIR)
-
     return {
-        "gpt_models": sorted(gpt_models),
-        "sovits_models": sorted(sovits_models),
-        "ref_audios": sorted(ref_audios)
+        "gpt_models": sorted(scan_files(GPT_WEIGHTS_DIRS, [".ckpt", ".pth"])),
+        "sovits_models": sorted(scan_files(SOVITS_WEIGHTS_DIRS, [".ckpt", ".pth"])),
+        "ref_audios": scan_ref_audios(REF_AUDIO_DIR) if REF_AUDIO_DIR else []
     }
 
 
 @app.post("/api/model/switch")
 async def switch_model(req: SwitchModelRequest):
-    """切换模型"""
     results = []
-
     if req.gpt_model:
-        gpt_path = f"{TTS_PROJECT_DIR}/GPT_weights_v2/{req.gpt_model}"
-        if not os.path.exists(gpt_path):
-            gpt_path = f"{TTS_PROJECT_DIR}/GPT_weights/{req.gpt_model}"
-        r = requests.get(f"{TTS_BACKEND}/set_gpt_weights", params={"weights_path": gpt_path})
-        results.append(f"GPT: {r.text}")
-
+        gpt_path = find_model_path(GPT_WEIGHTS_DIRS, req.gpt_model)
+        if gpt_path:
+            r = requests.get(f"{TTS_BACKEND}/set_gpt_weights", params={"weights_path": gpt_path})
+            results.append(f"GPT: {r.text}")
+        else:
+            results.append("GPT: 找不到模型文件")
     if req.sovits_model:
-        sovits_path = f"{TTS_PROJECT_DIR}/SoVITS_weights_v2/{req.sovits_model}"
-        if not os.path.exists(sovits_path):
-            sovits_path = f"{TTS_PROJECT_DIR}/SoVITS_weights/{req.sovits_model}"
-        r = requests.get(f"{TTS_BACKEND}/set_sovits_weights", params={"weights_path": sovits_path})
-        results.append(f"SoVITS: {r.text}")
-
+        sovits_path = find_model_path(SOVITS_WEIGHTS_DIRS, req.sovits_model)
+        if sovits_path:
+            r = requests.get(f"{TTS_BACKEND}/set_sovits_weights", params={"weights_path": sovits_path})
+            results.append(f"SoVITS: {r.text}")
+        else:
+            results.append("SoVITS: 找不到模型文件")
     return {"success": True, "results": results}
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    """对话"""
     try:
         reply_text = get_ai_reply(req.message)
         audio_path = text_to_speech(
             text=reply_text,
             ref_audio_path=req.ref_audio_path,
+            aux_ref_audio_paths=req.aux_ref_audio_paths,
             prompt_text=req.prompt_text,
             prompt_lang=req.prompt_lang,
             text_lang=req.text_lang,
-            filename=f"reply_{abs(hash(reply_text))}.wav"
+            filename=f"reply_{abs(hash(reply_text))}.wav",
+            tts_params=req.tts_params.model_dump()  # ← 加这行
         )
         return {"reply": reply_text, "audio_file": os.path.basename(audio_path)}
     except Exception as e:
@@ -136,24 +239,31 @@ async def chat(req: ChatRequest):
 
 @app.get("/api/audio/{filename}")
 async def get_audio(filename: str):
-    """获取音频文件"""
     filepath = os.path.join("output", filename)
     if not os.path.exists(filepath):
-        return FileResponse(os.path.join("output", "test.wav"), media_type="audio/wav")
+        filepath = os.path.join("output", "test.wav")
     return FileResponse(filepath, media_type="audio/wav")
+
+
+@app.get("/api/ref-audio-preview")
+async def preview_ref_audio(path: str):
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return FileResponse(path, media_type="audio/wav")
 
 
 @app.post("/api/voice/test")
 async def test_voice(req: VoiceConfig):
-    """测试音色"""
     try:
         audio_path = text_to_speech(
             text="你好，这是音色测试",
             ref_audio_path=req.ref_audio_path,
+            aux_ref_audio_paths=req.aux_ref_audio_paths,
             prompt_text=req.prompt_text,
             prompt_lang=req.prompt_lang,
             text_lang=req.text_lang,
-            filename="test.wav"
+            filename="test.wav",
+            tts_params=req.tts_params.model_dump()  # 👈 加上这行
         )
         return {"audio_file": "test.wav"}
     except Exception as e:
@@ -163,8 +273,6 @@ async def test_voice(req: VoiceConfig):
 if __name__ == "__main__":
     import uvicorn
     from dotenv import load_dotenv
-
     load_dotenv()
-
     port = int(os.getenv("BACKEND_PORT", 8000))
     uvicorn.run(app, host="127.0.0.1", port=port)
