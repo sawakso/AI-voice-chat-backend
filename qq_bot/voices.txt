@@ -1,0 +1,7 @@
+  "魔王": {
+    "ref_audio": "D:/Adobe/GPT-SoVTIS-V2/推理/魔王_v1/中文/你总是可以计算得很清楚，让一切都依照你的计划进行，对吗？.wav",
+    "prompt_text": "你总是可以计算得很清楚，让一切都依照你的计划进行，对吗？",
+    "prompt_lang": "zh",
+    "gpt_weight": "魔王_v1-e50.ckpt",
+    "sovits_weight": "魔王_v1_e8_s192.pth"
+}

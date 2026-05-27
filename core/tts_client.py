@@ -1,7 +1,7 @@
 import requests
 import os
 import json
-from config.settings import TTS_API_URL, TTS_OUTPUT_DIR
+from config.settings import TTS_API_URL, GENIE_TTS_API_URL, TTS_OUTPUT_DIR
 
 os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
 
@@ -13,8 +13,12 @@ def text_to_speech(
     prompt_lang: str = "zh",
     text_lang: str = "zh",
     filename: str = "reply.wav",
-    tts_params: dict = None
+    tts_params: dict = None,
+    tts_api_url: str = None,
 ) -> str:
+    if tts_api_url is None:
+        tts_api_url = TTS_API_URL
+
     params = {
         "text": text,
         "text_lang": text_lang,
@@ -38,12 +42,12 @@ def text_to_speech(
             if key in tts_params:
                 params[key] = tts_params[key]
 
+    print(f"[TTS] 引擎: {tts_api_url}")
     print("=" * 40)
-    print("TTS 请求参数:")
     print(json.dumps(params, indent=2, ensure_ascii=False))
     print("=" * 40)
 
-    resp = requests.post(f"{TTS_API_URL}/tts", json=params, timeout=180)
+    resp = requests.post(f"{tts_api_url}/tts", json=params, timeout=180)
 
     if resp.status_code != 200:
         raise Exception(f"TTS 失败: {resp.text}")

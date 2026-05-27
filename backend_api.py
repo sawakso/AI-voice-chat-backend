@@ -1,15 +1,19 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles  # ✅ 新增
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.llm_client import get_ai_reply
 from core.tts_client import text_to_speech
+from qq_bot.handler import handle_async, set_allowed_groups
+from qq_bot.sender import send_group_msg, send_group_voice, send_private_msg
+from config.settings import QQBOT_WS_TOKEN, QQBOT_GROUP_IDS, QQBOT_REF_AUDIO, QQBOT_PROMPT_TEXT
 import os
 import glob
 import requests
-import threading  # ✅ 新增
-import time  # ✅ 新增
+import threading
+import time
+import json
 
 app = FastAPI()
 
@@ -21,9 +25,39 @@ app.add_middleware(
 )
 
 # ========== 配置（从环境变量读取） ==========
-from config.settings import GPT_WEIGHTS_DIR, SOVITS_WEIGHTS_DIR, REF_AUDIO_DIR
+from config.settings import GPT_WEIGHTS_DIR, SOVITS_WEIGHTS_DIR, REF_AUDIO_DIR, GENIE_REF_AUDIO_DIR, GENIE_TTS_API_URL
+
+# QQ Bot 群号白名单
+if QQBOT_GROUP_IDS.strip():
+    set_allowed_groups({int(x.strip()) for x in QQBOT_GROUP_IDS.split(",") if x.strip()})
 
 TTS_BACKEND = os.getenv("TTS_API_URL", "http://127.0.0.1:9880")
+
+def get_tts_url(engine: str) -> str:
+    """根据引擎选择 TTS 后端地址"""
+    if engine == "genie":
+        return GENIE_TTS_API_URL
+    return TTS_BACKEND
+
+def check_genie_available() -> bool:
+    """检测 GENIE 服务是否可用"""
+    try:
+        r = requests.get(f"{GENIE_TTS_API_URL}/set_gpt_weights", params={"weights_path": "__ping__"}, timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def get_genie_characters() -> list:
+    """从 GENIE 服务获取可用角色列表"""
+    try:
+        r = requests.get(f"{GENIE_TTS_API_URL}/characters", timeout=3)
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("characters", [])
+    except Exception:
+        pass
+    return []
 
 GPT_WEIGHTS_DIRS = [d.strip() for d in GPT_WEIGHTS_DIR.split(",") if d.strip()] if GPT_WEIGHTS_DIR else []
 SOVITS_WEIGHTS_DIRS = [d.strip() for d in SOVITS_WEIGHTS_DIR.split(",") if d.strip()] if SOVITS_WEIGHTS_DIR else []
@@ -94,6 +128,7 @@ class TTSAdvancedParams(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    engine: str = "gpt-sovits"
     ref_audio_path: str
     aux_ref_audio_paths: list[str] = []
     prompt_text: str
@@ -102,6 +137,7 @@ class ChatRequest(BaseModel):
     tts_params: TTSAdvancedParams = TTSAdvancedParams()
 
 class VoiceConfig(BaseModel):
+    engine: str = "gpt-sovits"
     ref_audio_path: str
     aux_ref_audio_paths: list[str] = []
     prompt_text: str
@@ -110,8 +146,10 @@ class VoiceConfig(BaseModel):
     tts_params: TTSAdvancedParams = TTSAdvancedParams()
 
 class SwitchModelRequest(BaseModel):
+    engine: str = "gpt-sovits"
     gpt_model: str = ""
     sovits_model: str = ""
+    genie_character: str = ""
 
 
 # ========== 工具函数 ==========
@@ -189,27 +227,43 @@ def find_model_path(dirs, filename):
 
 @app.get("/api/models")
 async def get_models():
+    engines = [{"id": "gpt-sovits", "name": "GPT-SoVITS (原版)", "available": True}]
+    if check_genie_available():
+        engines.append({"id": "genie", "name": "GENIE (ONNX 加速)", "available": True})
+    else:
+        engines.append({"id": "genie", "name": "GENIE (ONNX 加速)", "available": False})
+
     return {
         "gpt_models": sorted(scan_files(GPT_WEIGHTS_DIRS, [".ckpt", ".pth"])),
         "sovits_models": sorted(scan_files(SOVITS_WEIGHTS_DIRS, [".ckpt", ".pth"])),
-        "ref_audios": scan_ref_audios(REF_AUDIO_DIR) if REF_AUDIO_DIR else []
+        "ref_audios": scan_ref_audios(REF_AUDIO_DIR) if REF_AUDIO_DIR else [],
+        "genie_ref_audios": scan_ref_audios(GENIE_REF_AUDIO_DIR) if GENIE_REF_AUDIO_DIR else [],
+        "engines": engines,
+        "genie_characters": get_genie_characters() if check_genie_available() else [],
     }
 
 
 @app.post("/api/model/switch")
 async def switch_model(req: SwitchModelRequest):
+    tts_url = get_tts_url(req.engine)
     results = []
+
+    if req.engine == "genie" and req.genie_character:
+        r = requests.get(f"{tts_url}/switch_character", params={"name": req.genie_character})
+        results.append(f"GENIE: {r.json().get('message', 'OK')}")
+        return {"success": True, "results": results}
+
     if req.gpt_model:
         gpt_path = find_model_path(GPT_WEIGHTS_DIRS, req.gpt_model)
         if gpt_path:
-            r = requests.get(f"{TTS_BACKEND}/set_gpt_weights", params={"weights_path": gpt_path})
+            r = requests.get(f"{tts_url}/set_gpt_weights", params={"weights_path": gpt_path})
             results.append(f"GPT: {r.text}")
         else:
             results.append("GPT: 找不到模型文件")
     if req.sovits_model:
         sovits_path = find_model_path(SOVITS_WEIGHTS_DIRS, req.sovits_model)
         if sovits_path:
-            r = requests.get(f"{TTS_BACKEND}/set_sovits_weights", params={"weights_path": sovits_path})
+            r = requests.get(f"{tts_url}/set_sovits_weights", params={"weights_path": sovits_path})
             results.append(f"SoVITS: {r.text}")
         else:
             results.append("SoVITS: 找不到模型文件")
@@ -218,6 +272,7 @@ async def switch_model(req: SwitchModelRequest):
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
+    tts_url = get_tts_url(req.engine)
     try:
         reply_text = get_ai_reply(req.message)
         audio_path = text_to_speech(
@@ -228,7 +283,8 @@ async def chat(req: ChatRequest):
             prompt_lang=req.prompt_lang,
             text_lang=req.text_lang,
             filename=f"reply_{abs(hash(reply_text))}.wav",
-            tts_params=req.tts_params.model_dump()  # ← 加这行
+            tts_params=req.tts_params.model_dump(),
+            tts_api_url=tts_url,
         )
         return {"reply": reply_text, "audio_file": os.path.basename(audio_path)}
     except Exception as e:
@@ -254,6 +310,7 @@ async def preview_ref_audio(path: str):
 
 @app.post("/api/voice/test")
 async def test_voice(req: VoiceConfig):
+    tts_url = get_tts_url(req.engine)
     try:
         audio_path = text_to_speech(
             text="你好，这是音色测试",
@@ -263,11 +320,72 @@ async def test_voice(req: VoiceConfig):
             prompt_lang=req.prompt_lang,
             text_lang=req.text_lang,
             filename="test.wav",
-            tts_params=req.tts_params.model_dump()  # 👈 加上这行
+            tts_params=req.tts_params.model_dump(),
+            tts_api_url=tts_url,
         )
         return {"audio_file": "test.wav"}
     except Exception as e:
         return {"audio_file": "", "error": str(e)}
+
+
+# ========== QQ Bot WebSocket ==========
+
+@app.websocket("/ws/qq")
+async def qq_websocket(ws: WebSocket):
+    """接收 NapCatQQ 反向 WebSocket 连接，处理群消息事件"""
+    await ws.accept()
+
+    # 鉴权（OneBot 在 HTTP header 里传 access_token）
+    token = ws.headers.get("authorization", "").replace("Bearer ", "")
+    if QQBOT_WS_TOKEN and token != QQBOT_WS_TOKEN:
+        await ws.close(code=4001, reason="invalid token")
+        return
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            # 处理消息事件
+            if data.get("post_type") != "message":
+                continue
+            msg_type = data.get("message_type")
+            if msg_type not in ("group", "private"):
+                continue
+
+            result = await handle_async(data)
+            if result is None:
+                continue
+
+            if msg_type == "private":
+                send_private_msg(result["user_id"], result["reply"])
+                continue
+
+            # 发送文本回复
+            send_group_msg(result["group_id"], result["reply"], result["reply_to"])
+
+            # 如果需要发语音
+            if result.get("want_voice"):
+                from core.tts_client import text_to_speech
+                if QQBOT_REF_AUDIO and QQBOT_PROMPT_TEXT:
+                    try:
+                        wav = text_to_speech(
+                            text=result["reply"],
+                            ref_audio_path=QQBOT_REF_AUDIO,
+                            prompt_text=QQBOT_PROMPT_TEXT,
+                            filename=f"qq_voice_{abs(hash(result['reply']))}.wav",
+                        )
+                        send_group_voice(result["group_id"], wav)
+                    except Exception:
+                        pass  # 语音失败就算了，文字已经发了
+                else:
+                    send_group_msg(result["group_id"], "（没配参考音频，发不了语音，去 .env 填一下 QQBOT_REF_AUDIO 和 QQBOT_PROMPT_TEXT）")
+
+    except WebSocketDisconnect:
+        pass
 
 
 if __name__ == "__main__":

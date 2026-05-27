@@ -1,0 +1,65 @@
+﻿{
+  "小特": {
+      "ref_audio": "D:/Adobe/GPT-SoVTIS-V2/推理/魔王ai/02/博士，累了吗？那就休息吧。每个人都有平静入梦的权利，你也一样。.wav",
+      "prompt_text": "博士，累了吗？那就休息吧。每个人都有平静入梦的权利，你也一样。",
+      "prompt_lang": "zh",
+      "gpt_weight": "小特.ckpt",
+      "sovits_weight": "小特.pth"
+  },
+  "丁真": {
+    "ref_audio": "D:/Adobe/GPT-SoVTIS-V2/推理/丁真/我最近一直在努力学习.wav",
+    "prompt_text": "我最近一直在努力学习",
+    "prompt_lang": "zh",
+    "gpt_weight": "丁真GPT模型.ckpt",
+    "sovits_weight": "丁真SoVITS模型.pth"
+  },
+  "祥子": {
+    "ref_audio": "D:/Adobe/GPT-SoVTIS-V2/推理/祥子/sakiko/sakikoV2 (1).wav",
+    "prompt_text": "今日は言うことがあってきましたの。クライシックをやめさせていただきますわ",
+    "prompt_lang": "ja",
+    "gpt_weight": "丰川祥子V2-e30.ckpt",
+    "sovits_weight": "丰川祥子V2_e150_s1500.pth"
+  },
+  "爱音": {
+    "ref_audio": "D:/Adobe/GPT-SoVTIS-V2/推理/爱音/AnonV2/Anon (1).wav",
+    "prompt_text": "千早愛音です。家は都合で変わってる時期の入学ですが、よかったら仲良くしてください。よろしくお願いします。",
+    "prompt_lang": "ja",
+    "gpt_weight": "千早爱音V2-e30.ckpt",
+    "sovits_weight": "千早爱音V2_e20_s460.pth"
+  },
+  "素世": {
+    "ref_audio": "D:/Adobe/GPT-SoVTIS-V2/推理/素世/soyoV2/soyo (1).wav",
+    "prompt_text": "さきちゃん、よかった。来てくれて。久しぶりじゃない？大丈夫？",
+    "prompt_lang": "ja",
+    "gpt_weight": "长崎素世V2.1-e30.ckpt",
+    "sovits_weight": "长崎素世V2.1_e20_s360.pth"
+  },
+  "庄方宜": {
+      "ref_audio": "D:/Adobe/GPT-SoVTIS-V2/推理/庄方宜/庄方宜参考音频/迎敌或是迎客都得整装后再出发。.wav",
+      "prompt_text": "迎敌或是迎客都得整装后再出发。",
+      "prompt_lang": "zh",
+      "gpt_weight": "庄方宜-e15.ckpt",
+      "sovits_weight": "庄方宜_e8_s1248.pth",
+  },
+  "鬼芳佳代子": {
+    "ref_audio": "D:/Adobe/GPT-SoVTIS-V2/推理/鬼芳佳代子/まあ、問題があったら解決してあげるけど.wav",
+    "prompt_text": "まあ、問題があったら解決してあげるけど",
+    "prompt_lang": "ja",
+    "gpt_weight": "鬼方佳代子-e15.ckpt",
+    "sovits_weight": "鬼方佳代子_e12_s552.pth"
+  },
+  "鱼糕": {
+    "ref_audio": "D:/Adobe/GPT-SoVTIS-V2/推理/鱼糕/会严重影响经济的发展。 照你这么说，炸鸡块要用92#.wav",
+    "prompt_text": "会严重影响经济的发展。照你这么说，炸鸡块要用92#",
+    "prompt_lang": "zh",
+    "gpt_weight": "鱼糕-e15.ckpt",
+    "sovits_weight": "鱼糕_e10_s500.pth"
+  },
+  "鸡哥": {
+    "ref_audio": "D:/Adobe/GPT-SoVTIS-V2/推理/鸡哥pro/全民制作人们大家好，我是练习时长两年半的个人练习生蔡徐坤.wav",
+    "prompt_text": "全民制作人们大家好，我是练习时长两年半的个人练习生蔡徐坤",
+    "prompt_lang": "zh",
+    "gpt_weight": "蔡徐坤pro-e15.ckpt",
+    "sovits_weight": "蔡徐坤pro_e12_s660.pth"
+  }
+}
